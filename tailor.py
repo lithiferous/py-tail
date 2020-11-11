@@ -1,11 +1,10 @@
-from multiprocessing import Pool
+from io import BytesIO
 
 import argparse
 import os
 import sys
 import time
 
-CPUS  = 4
 LINES = 10
 SLEEP = 1.0
 
@@ -17,16 +16,17 @@ class TailError(Exception):
 
 class Tailor:
     def __init__(self, filename, bytes_num, follow, lines_num, sleep_val):
-        self.file      = filename
+        self.buf       = None
+        self.curpos    = None
         self.bytes_num = bytes_num
+        self.file      = filename
         self.follow    = follow
         self.lines_num = lines_num
         self.sleep_val = sleep_val
-        self.curpos    = None
-        self.callback  = sys.stdout.write
-        self.tester    = self.check_file_validity(filename)
+        self.callback  = sys.stdout.buffer.write
+        self.tester    = self.check_file(filename)
 
-    def _get_line_pos(self):
+    def _get_first_byte(self):
         '''finds starting byte by looping back from the EOF'''
         lines = 0
         with open(self.file, 'rb') as f:
@@ -45,32 +45,40 @@ class Tailor:
         if self.bytes_num is not None:
             self.curpos = self.bytes_num
         else:
-            self.curpos = self._get_line_pos()
+            self.curpos = self._get_first_byte()
 
     def _reader(self, f):
         self._get_curpos()
         f.seek(self.curpos)
-        lines = f.readlines()
-        self.callback("".join(l.decode('utf-8') for l in lines))
+        return f.read()
+
+    def _reader_buf(self, f):
+        self.buf = BytesIO(self._reader(f))
+        self.callback(self.buf.read())
+        sys.stdout.flush()
+        while True:
+            mstd = BytesIO(self._reader(f))
+            if mstd.getvalue() != self.buf.getvalue():
+                self.buf = mstd
+                self.callback(self.buf.read())
+                sys.stdout.flush()
+            time.sleep(self.sleep_val)
 
     def run(self):
         with open(self.file, 'rb') as f:
             if self.follow:
-                while True:
-                    self._reader(f)
-                    time.sleep(self.sleep_val)
+                self._reader_buf(f)
             else:
-                self._reader(f)
+                self.callback(self._reader(f))
 
-    def check_file_validity(self, file_):
+    def check_file(self, f_):
         ''' Check whether the a given file exists, readable and is a file '''
-        if not os.access(file_, os.F_OK):
-            raise TailError("File '%s' does not exist" % (file_))
-        if not os.access(file_, os.R_OK):
-            raise TailError("File '%s' not readable" % (file_))
-        if os.path.isdir(file_):
-            raise TailError("File '%s' is a directory" % (file_))
-
+        if not os.access(f_, os.F_OK):
+            raise TailError("File '%s' does not exist" % (f_))
+        if not os.access(f_, os.R_OK):
+            raise TailError("File '%s' not readable" % (f_))
+        if os.path.isdir(f_):
+            raise TailError("File '%s' is a directory" % (f_))
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser()
@@ -100,23 +108,9 @@ if __name__ == '__main__':
                    type    = float,
                    default = SLEEP,
                    help    = "with -f option - sleep N seconds before check")
+    args = p.parse_args()
     for f in args.filenames:
         Tailor(f, args.bytes_num,
                   args.follow,
                   args.lines_num,
                   args.sleep_val).run()
-
-#def process(files):
-#    '''Maps tail process to multiplecores'''
-#    for f in files:
-#        Tailor(f, args.bytes_num,
-#                  args.follow,
-#                  args.lines_num,
-#                  args.sleep_val).run()
-#    args = p.parse_args()
-#    print(args)
-#    pool = Pool(processes=CPUS)
-#    with pool as p:
-#        p.map(process, args.filenames)
-#
-
